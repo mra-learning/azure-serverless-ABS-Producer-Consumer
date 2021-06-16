@@ -9,59 +9,60 @@ using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using Azure.Messaging.ServiceBus;
 using System.Collections.Generic;
+using Microsoft.Extensions.Options;
 
-namespace backend_azure_serverless_functions
+namespace azure_serverless_ASB_producer_consumer
 {
-    public static class Producer
+    public class Producer
     {
-        // connection string to your Service Bus namespace
-        static string connectionString = "Endpoint=sb://sb-opera.servicebus.windows.net/;SharedAccessKeyName=OperaETLPolicy;SharedAccessKey=0ECZ2WQn/td6xnQ3j7G6nb54NzoM2pt8pOY/a392vpQ=;EntityPath=reservations";
-
-        // name of your Service Bus queue
-        static string queueName = "reservations";
-
         // the client that owns the connection and can be used to create senders and receivers
-        static ServiceBusClient client;
+        private ServiceBusClient _client;
 
         // the sender used to publish messages to the queue
-        static ServiceBusSender sender;
+        private ServiceBusSender _sender;
+
+        private readonly AzureSettings _azureSettings;
+        private readonly ILogger<Producer> _log;
+
+        public Producer(IOptions<AzureSettings> options, ILogger<Producer> log)
+        {
+            _azureSettings = options.Value;
+            _log = log;
+            _client = new ServiceBusClient(_azureSettings.AzureServiceBusConnectionString);
+            _sender = _client.CreateSender(_azureSettings.AzureServiceBusReservationQueueName);
+        }
 
         [FunctionName("Producer")]
-        public static async Task<IActionResult> Run(
-            [HttpTrigger(AuthorizationLevel.Function, "get", "post", Route = null)] HttpRequest req,
-            [Queue("reservations", Connection = "AzureWebJobsStorage")] IAsyncCollector<string> reservationQueue,
-            ILogger log)
+        public async Task<IActionResult> Run(
+            [HttpTrigger(AuthorizationLevel.Function, "get", "post", Route = null)] HttpRequest req)
         {
-            log.LogInformation("Creating reservation ...");
+            _log.LogInformation("Creating reservation ...");
 
             // The Service Bus client types are safe to cache and use as a singleton for the lifetime
             // of the application, which is best practice when messages are being published or read
             // regularly.
             //
-            // Create the clients that we'll use for sending and processing messages.
-            client = new ServiceBusClient(connectionString);
-            sender = client.CreateSender(queueName);
 
             try
             {
                 // send a batch of messages to the queue
-                await SendMessages(log);
+                await SendMessages();
             }
             finally
             {
                 // Calling DisposeAsync on client types is required to ensure that network
                 // resources and other unmanaged objects are properly cleaned up.
-                await sender.DisposeAsync();
-                await client.DisposeAsync();
+                await _sender.DisposeAsync();
+                await _client.DisposeAsync();
             }
             
-            log.LogInformation("Press any key to end the application");
+            _log.LogInformation("Press any key to end the application");
 
             return new OkResult();
         }
 
 
-        static Queue<ServiceBusMessage> CreateMessages()
+        Queue<ServiceBusMessage> CreateMessages()
         {
             // create a queue containing the messages and return it to the caller
             Queue<ServiceBusMessage> messages = new Queue<ServiceBusMessage>();
@@ -69,7 +70,7 @@ namespace backend_azure_serverless_functions
             return messages;
         }
 
-        static async Task SendMessages(ILogger log)
+        async Task SendMessages()
         {
             // get the messages to be sent to the Service Bus queue
             Queue<ServiceBusMessage> messages = CreateMessages();
@@ -81,7 +82,7 @@ namespace backend_azure_serverless_functions
             while (messages.Count > 0)
             {
                 // start a new batch 
-                using ServiceBusMessageBatch messageBatch = await sender.CreateMessageBatchAsync();
+                using ServiceBusMessageBatch messageBatch = await _sender.CreateMessageBatchAsync();
 
                 // add the first message to the batch
                 if (messageBatch.TryAddMessage(messages.Peek()))
@@ -103,12 +104,12 @@ namespace backend_azure_serverless_functions
                 }
 
                 // now, send the batch
-                await sender.SendMessagesAsync(messageBatch);
+                await _sender.SendMessagesAsync(messageBatch);
 
                 // if there are any remaining messages in the .NET queue, the while loop repeats 
             }
 
-            log.LogInformation($"Sent a batch of {messageCount} messages to the topic: {queueName}");
+            _log.LogInformation($"Sent a batch of {messageCount} messages to the topic: {_azureSettings.AzureServiceBusReservationQueueName}");
         }
     }
 }
